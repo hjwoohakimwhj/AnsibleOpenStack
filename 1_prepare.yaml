@@ -1,0 +1,101 @@
+---
+- hosts: physical_machine
+  remote_user: root
+  gather_facts: false
+  tasks:
+  - name: disable selinux
+    command: setenforce 0
+  - name: disable selinux
+    command: sed -i 's/enforcing/disabled/g' /etc/selinux/config
+  - name: close the firewall
+    service:
+      name: firewalld
+      state: stopped
+  - name: disable the firewall
+    command: systemctl disable firewalld.service
+  - name: modify the ens33
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens33
+      regexp: '^BOOTPROTO'
+      line: 'BOOTPROTO=none'
+  - name: modify the ens33
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens33
+      regexp: '^ONBOOT'
+      line: 'ONBOOT=yes' 
+  - name: modify the ens34
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens34
+      regexp: '^BOOTPROTO'
+      line: 'BOOTPROTO=static' 
+  - name: modify the ens34
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens34
+      regexp: '^ONBOOT'
+      line: 'ONBOOT=yes' 
+  - name: add the network prefix and gateway
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens34
+      line: "{{ item }}"
+    with_items:
+       - 'IPADDR='
+       - 'PREFIX=24'
+       - 'GATEWAY=192.168.65.1'
+  - name: edit the /etc/hosts
+    lineinfile:
+      dest: /etc/hosts
+      line: "{{ item }}"
+    with_items:
+       - '192.168.65.5	controller'
+       - '192.168.65.6	compute'
+
+- hosts: controller
+  remote_user: root
+  gather_facts: false
+  tasks:
+  - name: edit the controller mgmt ip
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens34
+      regexp: '^IPADDR'
+      line: 'IPADDR=192.168.65.5'
+  - name: set the host name
+    command: hostnamectl set-hostname controller
+  - name: ifdown the ens34
+    command: ifdown ens34
+  - name: ifup ens34
+    command: ifup ens34
+
+- hosts: compute
+  remote_user: root
+  gather_facts: false
+  tasks:
+  - name: edit the compute mgmt ip
+    lineinfile:
+      dest: /etc/sysconfig/network-scripts/ifcfg-ens34
+      regexp: '^IPADDR'
+      line: 'IPADDR=192.168.65.6'
+  - name: set the host name
+    command: hostnamectl set-hostname compute 
+  - name: ifdown the ens34
+    command: ifdown ens34
+  - name: ifup ens34
+    command: ifup ens34
+
+- hosts: physical_machine
+  remote_user: root
+  gather_facts: false
+  tasks:
+  - name: install wget
+    yum:
+      name: wget
+      state: latest
+  - name: install the newton
+    yum:
+      name: centos-release-openstack-newton
+      state: latest
+  - name: upgrade
+    yum:
+      name: '*'
+      state: latest
+  - name: reboot
+    command: reboot

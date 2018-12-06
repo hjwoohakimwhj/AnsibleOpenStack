@@ -1,0 +1,104 @@
+---
+- hosts: controller
+  remote_user: root
+  gather_facts: False
+  vars:
+    first_time: false
+  tasks:
+  - name:
+    mysql_db:
+      login_user: "root"
+      login_password: "123456"
+      name: "glance"
+      state: "present"
+    ignore_errors: True
+  - name:
+    mysql_user:
+      login_user: "root"
+      login_password: "123456"
+      name: "glance"
+      password: "glance"
+      host: "{{ item }}"
+      state: "present"
+      priv: "glance.*:ALL"
+    with_items:
+       - "localhost"
+       - "%"
+  - shell: "{{ item }}"
+    with_items:
+       - . /admin-openrc && openstack user create --domain default --password glance glance
+       - . /admin-openrc && openstack role add --project service --user glance admin
+       - . /admin-openrc && openstack service create --name glance --description "OpenStack Image" image
+       - . /admin-openrc && openstack endpoint create --region RegionOne image public http://controller:9292
+       - . /admin-openrc && openstack endpoint create --region RegionOne image internal http://controller:9292
+       - . /admin-openrc && openstack endpoint create --region RegionOne image admin http://controller:9292
+    when: first_time
+  - yum:
+      name: openstack-glance
+      state: latest
+    when: first_time
+  - lineinfile:
+      dest: /etc/glance/glance-api.conf
+      insertafter: '^\[database\]'
+      line: 'connection = mysql+pymysql://glance:glance@controller/glance'
+  - lineinfile:
+      dest: /etc/glance/glance-api.conf
+      insertafter: '^\[keystone_authtoken\]'
+      line: "{{ item }}"
+    with_items:
+      - 'password = glance'
+      - 'username = glance'
+      - 'project_name = service'
+      - 'user_domain_name = Default'
+      - 'project_domain_name = Default'
+      - 'auth_type = password'
+      - 'memcached_servers = controller:11211'
+      - 'auth_url = http://controller:35357'
+      - 'auth_uri = http://controller:5000'
+  - lineinfile:
+      dest: /etc/glance/glance-api.conf
+      insertafter: '^\[paste_deploy\]'
+      line: 'flavor = keystone'
+  - lineinfile:
+      dest: /etc/glance/glance-api.conf
+      insertafter: '^\[glance_store\]'
+      line: "{{ item }}"
+    with_items:
+       - 'filesystem_store_datadir = /var/lib/glance/images/'
+       - 'default_store = file'
+       - 'stores = file,http'
+  - lineinfile:
+      dest: /etc/glance/glance-registry.conf
+      insertafter: '^\[database\]'
+      line: 'connection = mysql+pymysql://glance:glance@controller/glance'
+  - lineinfile:
+      dest: /etc/glance/glance-registry.conf
+      insertafter: '^\[keystone_authtoken\]'
+      line: "{{ item }}"
+    with_items:
+      - 'password = glance'
+      - 'username = glance'
+      - 'project_name = service'
+      - 'user_domain_name = Default'
+      - 'project_domain_name = Default'
+      - 'auth_type = password'
+      - 'memcached_servers = controller:11211'
+      - 'auth_url = http://controller:35357'
+      - 'auth_uri = http://controller:5000'
+  - lineinfile:
+      dest: /etc/glance/glance-registry.conf
+      insertafter: '^\[paste_deploy\]'
+      line: 'flavor = keystone'
+  - command: su -s /bin/sh -c "glance-manage db_sync" glance
+  - command: systemctl enable openstack-glance-api.service openstack-glance-registry.service
+  - service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+       - openstack-glance-api
+       - openstack-glance-registry
+  - file:
+      src: /playbook/image/cirros-0.3.4-x86_64-disk.img
+      dest: /cirros-0.3.4-x86_64-disk.img
+      state: touch
+  - shell: . /admin-openrc && openstack image create "cirros" --file /cirros-0.3.4-x86_64-disk.img --disk-format qcow2 --container-format bare --public

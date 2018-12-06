@@ -1,0 +1,51 @@
+---
+- hosts: controller
+  remote_user: root
+  gather_facts: false
+  vars:
+    first_time: true
+  tasks:
+  - yum:
+      name: openstack-dashboard
+      state: latest
+    when: first_time
+  - lineinfile:
+      dest: /etc/openstack-dashboard/local_settings
+      regexp: "{{ item.exp }}"
+      line: "{{ item.lines }}"
+    with_items:
+      - { exp: '^OPENSTACK_HOST',lines: 'OPENSTACK_HOST = "controller"'}
+      - { exp: '^ALLOWED_HOSTS', lines: "ALLOWED_HOSTS = ['*', ]"}
+      - { exp: '^OPENSTACK_KEYSTONE_DEFAULT_ROLE', lines: 'OPENSTACK_KEYSTONE_DEFAULT_ROLE = "user"'}
+      - { exp: '^TIME_ZONE', lines: 'TIME_ZONE = "Asia/Shanghai"'}
+  - lineinfile:
+      dest: /etc/openstack-dashboard/local_settings 
+      insertbefore: '^CACHES ='
+      line: "SESSION_ENGINE = 'django.contrib.sessions.backends.file'"
+  - lineinfile:
+      dest: /etc/openstack-dashboard/local_settings
+      insertafter: "{{ item.exp }}"
+      line: "{{ item.lines }}"
+    with_items:
+       - { exp: '^#OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT', lines: 'OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True'}
+       - { exp: '^#OPENSTACK_KEYSTONE_DEFAULT_DOMAIN', lines: 'OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "default"'}
+  - replace:
+      dest: /etc/openstack-dashboard/local_settings
+      regexp: 'django.core.cache.backends.locmem.LocMemCache'
+      replace: 'django.core.cache.backends.memcached.MemcachedCache'
+  - lineinfile:
+      dest: /etc/openstack-dashboard/local_settings
+      insertafter: '^\s+.BACKEND.'
+      line: "        'LOCATION': 'controller:11211',"
+  - lineinfile:
+      dest: /etc/openstack-dashboard/local_settings
+      insertbefore: '^# Set this to True if running on a multi-domain model'
+      line: "{{ item }}"
+    with_items:
+       - 'OPENSTACK_API_VERSIONS = {"identity": 3, "image": 2, "volume": 2}'
+  - service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+       - httpd
+       - memcached

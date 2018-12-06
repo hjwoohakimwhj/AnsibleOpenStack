@@ -1,0 +1,85 @@
+---
+- hosts: physical_machine
+  remote_user: root
+  gather_facts: false
+  tasks:
+  - name: get the ip route
+    shell: ip route | sed -n '1p' | awk  -F ' '  '{print $3}'
+    register: result
+  - shell: ip route del default via 192.168.65.1
+    when: result.stdout.find('65')  != -1
+  - yum:
+      name: expect
+      state: latest
+  - name: install python-openstackclient
+    yum:
+      name: python-openstackclient
+      state: latest
+  - name: install openstack-selinux
+    yum:
+      name: openstack-selinux
+      state: latest
+- hosts: controller
+  remote_user: root
+  tasks:
+  - name: install SQL database
+    yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+       - mariadb
+       - mariadb-server
+       - python2-PyMySQL
+  - name: copy the /etc/my.cnf.d/openstack.cnf
+    copy:
+      src: /playbook/config_file/SQL.yaml
+      dest: /etc/my.cnf.d/openstack.cnf
+  - name: edit the openstack.cnf
+    lineinfile:
+      dest: /etc/my.cnf.d/openstack.cnf
+      regexp: '^bind-address'
+      line: 'bind-address = 192.168.65.5'
+  - copy:
+      src: /playbook/config_file/mysql_init.sh
+      dest: /mysql_init.sh
+  - command: chmod a+x /mysql_init.sh
+  - name: mysql init
+    command: /usr/bin/expect /mysql_init.sh 
+  - name: restart
+    service:
+      name: mariadb
+      state: started
+  - command: systemctl enable mariadb.service
+- hosts: controller
+  remote_user: root
+  tasks:
+  - name: isntall the rabbitmq-server
+    yum:
+      name: rabbitmq-server
+      state: latest
+  - name: start the rabbitmq-server
+    service:
+      name: rabbitmq-server
+      state: started
+  - command: "{{ item }}"
+    ignore_errors: True
+    with_items:
+       - rabbitmqctl add_user openstack 123456
+       - rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+       - systemctl enable rabbitmq-server.service 
+- hosts: controller
+  remote_user: root
+  tasks:
+  - name: install the memcached
+    yum:
+      name: memcached 
+      state: latest
+  - name: install
+    yum:
+      name: python-memcached 
+      state: latest
+  - name: edit the memcached
+    lineinfile:
+      dest: /etc/sysconfig/memcached
+      regexp: '^OPTIONS="-l 127.0.0.1,::1"'
+      line: 'OPTIONS="-l 192.168.65.5,::1"'

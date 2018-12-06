@@ -1,0 +1,283 @@
+---
+- hosts: controller
+  remote_user: root
+  gather_facts: False
+  vars:
+    first_time: true
+  tasks:
+  - name: mysql
+    mysql_db:
+      login_user: "root"
+      login_password: "123456"
+      name: "neutron"
+      state: "present"
+  - name: mysql user
+    mysql_user:
+      login_user: "root"
+      login_password: "123456"
+      name: "neutron"
+      password: "neutron"
+      host: "{{ item }}"
+      state: "present"
+      priv: "neutron.*:ALL"
+    with_items:
+       - "localhost"
+       - "%"
+  - name: user 
+    shell: "{{ item }}"
+    with_items:
+      - . /admin-openrc && openstack user create --domain default --password neutron neutron
+      - . /admin-openrc && openstack role add --project service --user neutron admin
+      - . /admin-openrc && openstack service create --name neutron --description "OpenStack Networking" network
+      - . /admin-openrc && openstack endpoint create --region RegionOne network public http://controller:9696
+      - . /admin-openrc && openstack endpoint create --region RegionOne network internal http://controller:9696
+      - . /admin-openrc openstack endpoint create --region RegionOne network admin http://controller:9696
+    when: first_time
+  - name: install the package
+    yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+       - openstack-neutron
+       - openstack-neutron-ml2
+       - openstack-neutron-linuxbridge
+       - ebtables
+    when: first_time
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[database\]'
+      line: "{{ item }}"
+    with_items:
+       - connection = mysql+pymysql://neutron:neutron@controller/neutron 
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[keystone_authtoken\]'
+      line: "{{ item }}"
+    with_items:
+       - password = neutron
+       - username = neutron
+       - project_name = service
+       - user_domain_name = Default
+       - project_domain_name = Default
+       - auth_type = password
+       - memcached_servers = controller:11211
+       - auth_url = http://controller:35357
+       - auth_uri = http://controller:5000
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[DEFAULT\]'
+      line: "{{ item }}"
+    with_items:
+       - notify_nova_on_port_data_changes = True
+       - notify_nova_on_port_status_changes = True
+       - auth_strategy = keystone
+       - transport_url = rabbit://openstack:123456@controller
+       - allow_overlapping_ips = True
+       - service_plugins = router
+       - core_plugin = ml2
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[nova\]'
+      line: "{{ item }}"
+    with_items:
+       - password = nova
+       - username = nova
+       - project_name = service
+       - region_name = RegionOne
+       - user_domain_name = Default
+       - project_domain_name = Default
+       - auth_type = password
+       - auth_url = http://controller:35357
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[oslo_concurrency\]'
+      line: "{{ item }}"
+    with_items:
+       - lock_path = /var/lib/neutron/tmp
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/ml2_conf.ini 
+      insertafter: '^\[ml2\]'
+      line: "{{ item }}"
+    with_items:
+       - extension_drivers = port_security
+       - mechanism_drivers = linuxbridge,l2population
+       - tenant_network_types = vxlan
+       - type_drivers = flat,vlan,vxlan
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/ml2_conf.ini 
+      insertafter: '^\[ml2_type_flat\]'
+      line: flat_networks = provider
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/ml2_conf.ini 
+      insertafter: '^\[ml2_type_vxlan\]'
+      line: vni_ranges = 1:1000
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/ml2_conf.ini 
+      insertafter: '^\[securitygroup\]'
+      line: enable_ipset = True
+  - name: 
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+      insertafter: '^\[linux_bridge\]'
+      line: physical_interface_mappings = provider:ens33
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+      insertafter: '^\[vxlan\]'
+      line: "{{ item }}"
+    with_items:
+       - enable_vxlan = True
+       - local_ip = 192.168.65.5
+       - l2_population = True
+  - name: edit the file
+    lineinfile:
+      dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+      insertafter: '^\[securitygroup\]'
+      line: "{{ item }}"
+    with_items:
+       - firewall_driver = neutron.agent.linux.iptables_firewall.IptablesFirewallDriver
+       - enable_security_group = True 
+  - name: 
+    lineinfile:
+      dest: /etc/neutron/l3_agent.ini
+      insertafter: '^\[DEFAULT\]'
+      line: interface_driver = neutron.agent.linux.interface.BridgeInterfaceDriver
+  - name: 
+    lineinfile:
+      dest: /etc/neutron/dhcp_agent.ini
+      insertafter: '^\[DEFAULT\]'
+      line: "{{ item }}"
+    with_items:
+       - enable_isolated_metadata = True
+       - dhcp_driver = neutron.agent.linux.dhcp.Dnsmasq
+       - interface_driver = neutron.agent.linux.interface.BridgeInterfaceDriver
+  - name:
+    lineinfile:
+      dest: /etc/neutron/metadata_agent.ini
+      insertafter: '^\[DEFAULT\]'
+      line: "{{ item }}"
+    with_items:
+       - nova_metadata_ip = controller
+       - metadata_proxy_shared_secret = METADATA_SECRET
+  - name:
+    lineinfile: 
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[neutron\]'
+      line: "{{ item }}"
+    with_items:
+       - metadata_proxy_shared_secret = METADATA_SECRET
+       - service_metadata_proxy = True
+       - password = neutron
+       - username = neutron
+       - project_name = service
+       - region_name = RegionOne
+       - user_domain_name = Default
+       - project_domain_name = Default
+       - auth_type = password
+       - auth_url = http://controller:35357
+       - url = http://controller:9696
+  - command: ln -s /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
+    when: first_time
+  - command: su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron
+  - service:
+      name: openstack-nova-api
+      state: restarted
+  - command: systemctl enable neutron-server.service neutron-linuxbridge-agent.service neutron-dhcp-agent.service neutron-metadata-agent.service
+  - service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+       - neutron-server
+       - neutron-linuxbridge-agent
+       - neutron-dhcp-agent
+       - neutron-metadata-agent
+  - command: systemctl enable neutron-l3-agent.service
+  - service:
+      name: neutron-l3-agent
+      state: restarted
+
+- hosts: compute
+  remote_user: root
+  gather_facts: False
+  tasks:
+  - yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+       - openstack-neutron-linuxbridge 
+       - ebtables
+       - ipset 
+  - lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[DEFAULT\]'
+      line: "{{ item }}"
+    with_items:
+       - auth_strategy = keystone
+       - transport_url = rabbit://openstack:123456@controller
+  - lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[keystone_authtoken\]'
+      line: "{{ item }}"
+    with_items:
+       - password = neutron
+       - username = neutron
+       - project_name = service
+       - user_domain_name = Default
+       - project_domain_name = Default
+       - auth_type = password
+       - memcached_servers = controller:11211
+       - auth_url = http://controller:35357
+       - auth_uri = http://controller:5000
+  - lineinfile:
+      dest: /etc/neutron/neutron.conf
+      insertafter: '^\[oslo_concurrency\]'
+      line: lock_path = /var/lib/neutron/tmp
+  - lineinfile:
+      dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+      insertafter: '^\[linux_bridge\]'
+      line: 'physical_interface_mappings = provider:ens33'
+  - lineinfile:
+      dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+      insertafter: '^\[vxlan\]'
+      line: "{{ item }}"
+    with_items:
+       - l2_population = True
+       - local_ip = 192.168.65.6
+       - enable_vxlan = True
+  - lineinfile:
+      dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+      insertafter: '^\[securitygroup\]'
+      line: "{{ item }}"
+    with_items:
+       - firewall_driver = neutron.agent.linux.iptables_firewall.IptablesFirewallDriver
+       - enable_security_group = True
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[neutron\]'
+      line: "{{ item }}"
+    with_items:
+       - password = neutron
+       - username = neutron
+       - project_name = service
+       - region_name = RegionOne
+       - user_domain_name = Default
+       - project_domain_name = Default
+       - auth_type = password
+       - auth_url = http://controller:35357
+       - url = http://controller:9696
+  - command: systemctl enable neutron-linuxbridge-agent.service
+  - service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+       - openstack-nova-compute
+       - neutron-linuxbridge-agent

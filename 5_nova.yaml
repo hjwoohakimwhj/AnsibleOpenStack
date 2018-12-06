@@ -1,0 +1,180 @@
+---
+- hosts: controller
+  remote_user: root
+  vars:
+    first_time: false
+  tasks:
+  - mysql_db:
+      login_user: "root"
+      login_password: "123456"
+      name: "nova"
+      state: "present"
+  - mysql_db:
+      login_user: "root"
+      login_password: "123456"
+      name: "nova_api"
+      state: "present"
+  - name:
+    mysql_user:
+      login_user: "root"
+      login_password: "123456"
+      name: "nova"
+      password: "nova"
+      host: "{{ item }}"
+      state: "present"
+      priv: "nova_api.*:ALL/nova.*:ALL"
+    with_items:
+       - "localhost"
+       - "%"
+  - shell: "{{ item }}"
+    with_items:
+       - . /admin-openrc && openstack user create --domain default --password nova nova
+       - . /admin-openrc && openstack role add --project service --user nova admin
+       - . /admin-openrc && openstack service create --name nova --description "OpenStack Compute" compute
+       - . /admin-openrc && openstack endpoint create --region RegionOne compute public http://controller:8774/v2.1/%\(tenant_id\)s
+       - . /admin-openrc && openstack endpoint create --region RegionOne compute internal http://controller:8774/v2.1/%\(tenant_id\)s
+       - . /admin-openrc && openstack endpoint create --region RegionOne compute admin http://controller:8774/v2.1/%\(tenant_id\)s
+    when: first_time
+  - yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+       - openstack-nova-api
+       - openstack-nova-conductor
+       - openstack-nova-console 
+       - openstack-nova-novncproxy 
+       - openstack-nova-scheduler
+    when: first_time
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[DEFAULT\]'
+      line: "{{ item }}"
+    with_items:
+       - 'firewall_driver = nova.virt.firewall.NoopFirewallDriver'
+       - 'use_neutron = True'
+       - 'my_ip = 192.168.65.5'
+       - 'auth_strategy = keystone'
+       - 'transport_url = rabbit://openstack:123456@controller'
+       - 'enabled_apis = osapi_compute,metadata'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[api_database\]'
+      line: "{{ item }}"
+    with_items:
+       - 'connection = mysql+pymysql://nova:nova@controller/nova_api'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[database\]'
+      line: "{{ item }}"
+    with_items:
+       - 'connection = mysql+pymysql://nova:nova@controller/nova'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[keystone_authtoken\]'
+      line: "{{ item }}"
+    with_items:
+       - 'password = nova'
+       - 'username = nova'
+       - 'project_name = service'
+       - 'user_domain_name = Default'
+       - 'project_domain_name = Default'
+       - 'auth_type = password'
+       - 'memcached_servers = controller:11211'
+       - 'auth_url = http://controller:35357'
+       - 'auth_uri = http://controller:5000'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[vnc\]'
+      line: "{{ item }}"
+    with_items:
+       - 'vncserver_proxyclient_address = $my_ip'
+       - 'vncserver_listen = $my_ip'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[glance\]'
+      line: "{{ item }}"
+    with_items:
+       - 'api_servers = http://controller:9292'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[oslo_concurrency\]'
+      line: 'lock_path = /var/lib/nova/tmp'
+  - command: "{{ item }}"
+    with_items:
+       - su -s /bin/sh -c "nova-manage api_db sync" nova
+       - su -s /bin/sh -c "nova-manage db sync" nova
+       - systemctl enable openstack-nova-api.service openstack-nova-consoleauth.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service
+  - service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+       - openstack-nova-api
+       - openstack-nova-consoleauth
+       - openstack-nova-scheduler
+       - openstack-nova-conductor
+       - openstack-nova-novncproxy
+
+- hosts: compute
+  remote_user: root
+  vars:
+    first_time: true
+  tasks:
+  - yum:
+      name: "{{ item }}"
+      state: latest
+    with_items:
+       - openstack-nova-compute
+    when: first_time
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[DEFAULT\]'
+      line: "{{ item }}"
+    with_items:
+       - 'firewall_driver = nova.virt.firewall.NoopFirewallDriver'
+       - 'use_neutron = True'
+       - 'my_ip = 192.168.65.6'
+       - 'auth_strategy = keystone'
+       - 'transport_url = rabbit://openstack:123456@controller'
+       - 'enabled_apis = osapi_compute,metadata'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[keystone_authtoken\]'
+      line: "{{ item }}"
+    with_items:
+       - 'password = nova'
+       - 'username = nova'
+       - 'project_name = service'
+       - 'user_domain_name = Default'
+       - 'project_domain_name = Default'
+       - 'auth_type = password'
+       - 'memcached_servers = controller:11211'
+       - 'auth_url = http://controller:35357'
+       - 'auth_uri = http://controller:5000'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[vnc\]'
+      line: "{{ item }}"
+    with_items:
+       - 'novncproxy_base_url = http://controller:6080/vnc_auto.html'
+       - 'vncserver_proxyclient_address = $my_ip'
+       - 'vncserver_listen = 0.0.0.0'
+       - 'enabled = True'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[glance\]'
+      line: "{{ item }}"
+    with_items:
+       - 'api_servers = http://controller:9292'
+  - lineinfile:
+      dest: /etc/nova/nova.conf
+      insertafter: '^\[oslo_concurrency\]'
+      line: 'lock_path = /var/lib/nova/tmp'
+  - command: "{{ item }}"
+    with_items:
+      - systemctl enable libvirtd.service openstack-nova-compute.service
+  - service:
+      name: "{{ item }}"
+      state: restarted
+    with_items:
+      - libvirtd
+      - openstack-nova-compute
